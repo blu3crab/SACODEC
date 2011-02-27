@@ -1,5 +1,6 @@
 /////////////////////////////////////////////////////////////////
 // SACODEC - 28FEB11
+// fiddling...
 #include <windows.h>
 #include <iostream>
 #include <fstream>
