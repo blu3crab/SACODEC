@@ -1,5 +1,6 @@
 /////////////////////////////////////////////////////////////////
 // SACODEC - 28FEB11
+// author: nat
 // fiddling...
 #include <windows.h>
 #include <iostream>
