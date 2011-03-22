@@ -26,14 +26,6 @@ int main( int argc, char* argv[ ] )
 {
 	switch( argc )
 	{
-	case 2:
-		if( strcmp( argv[ 1 ], "-help" ) == 0 )
-			std::cout << "Here goes help" << std::endl;
-		else
-			std::cout << "Here goes help" << std::endl;
-
-		break;
-
 	case 3:
 		if( strcmp( argv[ 1 ], "-e" ) == 0 || strcmp( argv[ 1 ], "-E" ) == 0 )
 		{
@@ -79,7 +71,6 @@ bool EncodeFile( const char* filePath )
 {
 	CTL controlSig = { 0 };
 	HANDLE newFile = 0;
-	DWORD fpPos = 0, bytesWritten = 0;
 	char buffer[ MAX_PATH ] = { 0 };
 
 	//Create+Copy file to fileName.SAC.original extension
@@ -97,10 +88,79 @@ bool EncodeFile( const char* filePath )
 
 	//sig scan for 00's array, throw DEADBEEF sig + spacing between CTL elements there
 	//if you can't find it, throw it in a random place a bit from the header
-	fpPos = SetFilePointer( newFile, 0, NULL, FILE_BEGIN );
+
+	//TODO: Separate into function to clean up code
+	int currentBlock = 0, count = 0;
+	DWORD bytesRead = MAX_READ_WRITE_SIZE, bytesWritten = 0, fpPos[ 4 ] = { 0 };
+	char readBuffer[ MAX_READ_WRITE_SIZE ] = { 0 };
+	const char ctlIdentifier[ ] = "DEADBEEF";
+	bool found = false;
+
+	SetFilePointer( newFile, 0, NULL, FILE_BEGIN );
+
+	while( bytesRead == MAX_READ_WRITE_SIZE && found == false )
+	{
+		if( ReadFile( newFile, readBuffer, MAX_READ_WRITE_SIZE, &bytesRead, NULL ) )
+		{
+			for( int i = 0; i < (signed)( bytesRead - 20 ); i++ )
+			{
+				for( int j = 0; j < 20; j++ )
+				{
+					if( readBuffer[ i + j ] == 0x00 )
+						count++;
+				}
+				if( count == 20 )
+				{
+					SetFilePointer( newFile, currentBlock + i, NULL, FILE_BEGIN );
+					found = true;
+					break;
+				}
+				else
+					count = 0;
+			}
+		}
+		currentBlock += bytesRead;
+	}
+
+	if( found == false )
+		SetFilePointer( newFile, controlSig.border, NULL, FILE_BEGIN );
+
+	WriteFile( newFile, ctlIdentifier, sizeof( ctlIdentifier ), &bytesWritten, NULL );
+	char ctlBuf[ 65 ] = { 0 };
+	_itoa_s( GetFileSize( newFile, NULL ) / 6, ctlBuf, sizeof( ctlBuf ), 10 );
+	WriteFile( newFile, ctlBuf, strlen( ctlBuf ), &bytesWritten, NULL );
 
 	//write CTL in the file at the spacing got after DEADBEEF
+	for( int i = 1; i < 5; i++ )
+	{
+		fpPos[ i - 1 ] = SetFilePointer( newFile, ( GetFileSize( newFile, NULL ) / 6 ) * i, NULL, FILE_BEGIN );
+		switch( i )
+		{
+		case 1:
+			_itoa_s( controlSig.fileSize, ctlBuf, sizeof( ctlBuf ), 10 );
+			break;
+		case 2:
+			_itoa_s( controlSig.sigSize, ctlBuf, sizeof( ctlBuf ), 10 );
+			break;
+		case 3:
+			_itoa_s( controlSig.sigSpacing, ctlBuf, sizeof( ctlBuf ), 10 );
+			break;
+		case 4:
+			_itoa_s( controlSig.border, ctlBuf, sizeof( ctlBuf ), 10 );
+		}
+		WriteFile( newFile, ctlBuf, strlen( ctlBuf ), &bytesWritten, NULL );
+	}
+	
 	//use equation to write SIG
+	DWORD sigFpPos = 0;
+
+	for( int i = 0; i < (signed)( strlen( controlSig.sig ) ); i++ )
+	{
+		sigFpPos = SetFilePointer( newFile, controlSig.sigSpacing * i, NULL, FILE_BEGIN );
+		//check if sigFpPos is within fpPos[ ], if it is, increase sigFpPos to make sure not to overwrite
+		//write the element
+	}
+
 	//grab CRC, create a binary file holding this
 
 	CloseHandle( newFile );
@@ -198,11 +258,10 @@ void ReadINI( const char* filePath, CTL *controlSig )
 			iniLocations = iniBuffer.find( "[Equation]" );
 			if( iniLocations != std::string::npos )
 			{
-				// TODO: Parse the equation
+				//TODO: Downloaded muParser( http://muparser.sourceforge.net/ ), will build and mess around with it tomorrow
 				iniBuffer = iniBuffer.substr( iniLocations + strlen( "[Equation]=" ) );
 				
-				
-				//controlSig->sigSpacing=/
+				//controlSig->sigSpacing=
 			}
 		}
 
@@ -211,3 +270,4 @@ void ReadINI( const char* filePath, CTL *controlSig )
 
 	return;
 }
+
