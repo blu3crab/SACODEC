@@ -6,6 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include "crc32.h"
 
 #define MAX_READ_WRITE_SIZE 4096
 
@@ -19,9 +20,9 @@ typedef struct {
 
 bool EncodeFile( const char* );
 bool DecodeFile( const char* );
-HANDLE copyFile( const char*, CTL* );
-void ReadINI( const char*, CTL* );
-void writeCTLElements( HANDLE, CTL* );
+HANDLE copyFile( const char*, CTL*, std::string & );
+void ReadINI( const char*, CTL*, char [ ] );
+void writeCTLElements( HANDLE, CTL*, const char* );
 int parseEquation( const char*, std::string, CTL* );
 int eval( std::string buffer );
 
@@ -30,31 +31,21 @@ int main( int argc, char* argv[ ] )
 	switch( argc )
 	{
 	case 3:
-		if( strcmp( argv[ 1 ], "-e" ) == 0 || strcmp( argv[ 1 ], "-E" ) == 0 )
+		if( !strcmp( argv[ 1 ], "-e" ) == 0 || strcmp( argv[ 1 ], "-E" ) )
 		{
-			//TODO: check for directory as filename
+			//TODO: check for directory
 			if( EncodeFile( argv[ 2 ] ) != 0 )
-			{
 				std::cout << "Problem encoding the file." << std::endl;
-			}
 			else
-			{
-				std::cout << " --- " << std::endl << "File " << argv[ 2 ]<< " encoded successfully" << std::endl;
-			}
+				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " encoded successfully" << std::endl;
 		}
-		else if( strcmp( argv[ 1 ], "-d" ) == 0 || strcmp( argv[ 1 ], "-D" ) == 0 )
+		else if( !strcmp( argv[ 1 ], "-d" ) == 0 || strcmp( argv[ 1 ], "-D" ) )
 		{
-			//TODO: check for directory, check for problems
-			//DecodeFile( argv[ 2 ] );
-			//TODO: check for directory as filename
+			//TODO: check for directory
 			if( DecodeFile( argv[ 2 ] ) != 0 )
-			{
 				std::cout << "Problem decoding the file." << std::endl;
-			}
 			else
-			{
-				std::cout << " --- " << std::endl << "File " << argv[ 2 ]<< " decoded successfully" << std::endl;
-			}
+				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " decoded successfully" << std::endl;
 		}
 		else
 			std::cout << "Invalid arguments. Please type -help for details." << std::endl;
@@ -73,11 +64,13 @@ int main( int argc, char* argv[ ] )
 bool EncodeFile( const char* filePath )
 {
 	CTL controlSig = { 0 };
-	HANDLE newFile = 0;
-	char buffer[ MAX_PATH ] = { 0 };
+	HANDLE newFile = 0, crcFile = 0;
+	char buffer[ MAX_PATH ] = { 0 }, ctlIdentifier[ 256 ] = { 0 };
+	DWORD bytesWritten = 0;
+	std::string fileName;
 
 	//Create+Copy file to fileName.SAC.original extension
-	newFile = copyFile( filePath, &controlSig );
+	newFile = copyFile( filePath, &controlSig, fileName );
 	if( newFile == NULL )
 		return 1;
 
@@ -87,15 +80,27 @@ bool EncodeFile( const char* filePath )
 		buffer[ i ] = 0;
 	strcat_s( buffer, sizeof( buffer ), "SACodec.ini" );
 
-	ReadINI( buffer, &controlSig );
+	ReadINI( buffer, &controlSig, ctlIdentifier );
 
 	//sig scan for 00's array, throw DEADBEEF sig + spacing between CTL elements there
 	//if you can't find it, throw it in a random place a bit from the header
 	//write rest of sig according to equation
-	writeCTLElements( newFile, &controlSig );
+	writeCTLElements( newFile, &controlSig, ctlIdentifier );
 
 	//grab CRC, create a binary file holding this
+	crcFile = CreateFile( reinterpret_cast< LPCSTR > ( fileName.substr( 0, fileName.find_last_of( "." ) ).c_str( ) ), 
+		GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
 	
+	if( crcFile == INVALID_HANDLE_VALUE )
+	{
+		std::cout << "Could not create crc file, check permissions." << std::endl;
+		return NULL;
+	}
+
+	SetFilePointer( crcFile, 0, NULL, FILE_BEGIN );
+	_itoa_s( genCRC32( newFile ), buffer, sizeof( buffer ), 16 );
+	WriteFile( crcFile, buffer, strlen( buffer ), &bytesWritten, NULL );
+	CloseHandle( crcFile );
 
 	CloseHandle( newFile );
 
@@ -104,13 +109,13 @@ bool EncodeFile( const char* filePath )
 
 bool DecodeFile( const char* filePath )
 {
-
+	
 	return 0;
 }
 
-HANDLE copyFile( const char* filePath, CTL *controlSig )
+HANDLE copyFile( const char* filePath, CTL *controlSig, std::string &tempFileName )
 {
-	std::string tempFileName = filePath;
+	tempFileName = filePath;
 	HANDLE originalFile = 0, newFile = 0;
 	DWORD fpPos = 0, bytesRead = MAX_READ_WRITE_SIZE, bytesWritten = 0;
 	char buffer[ MAX_READ_WRITE_SIZE ] = { 0 };
@@ -126,7 +131,7 @@ HANDLE copyFile( const char* filePath, CTL *controlSig )
 		return NULL;
 	}
 
-	newFile = CreateFile( reinterpret_cast< LPCSTR> ( tempFileName.c_str( ) ), GENERIC_READ | GENERIC_WRITE, 0,
+	newFile = CreateFile( reinterpret_cast< LPCSTR > ( tempFileName.c_str( ) ), GENERIC_READ | GENERIC_WRITE, 0,
 		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
 
 	if( newFile == INVALID_HANDLE_VALUE )
@@ -158,7 +163,7 @@ HANDLE copyFile( const char* filePath, CTL *controlSig )
 	return newFile;
 }
 
-void ReadINI( const char* filePath, CTL *controlSig )
+void ReadINI( const char* filePath, CTL *controlSig, char ctlIdentifier[ 256 ] )
 {
 	std::ifstream iniStream;
 	std::string iniBuffer;
@@ -195,6 +200,13 @@ void ReadINI( const char* filePath, CTL *controlSig )
 					
 				controlSig->sigSpacing = parseEquation( filePath, iniBuffer, controlSig );
 			}
+
+			iniLocations = iniBuffer.find( "[Identifier]" );
+			if( iniLocations != std::string::npos )
+			{
+				strcpy_s( ctlIdentifier, 256, iniBuffer.substr( iniLocations + 
+					strlen( "[Identifier]=" ) ).c_str( ) );
+			}
 		}
 
 		iniStream.close( );
@@ -203,12 +215,11 @@ void ReadINI( const char* filePath, CTL *controlSig )
 	return;
 }
 
-void writeCTLElements( HANDLE newFile, CTL* controlSig)
+void writeCTLElements( HANDLE newFile, CTL* controlSig, const char* ctlIdentifier )
 {
 	int currentBlock = 0, count = 0;
 	DWORD bytesRead = MAX_READ_WRITE_SIZE, bytesWritten = 0, fpPos[ 4 ][ 2 ] = { 0 };
 	char readBuffer[ MAX_READ_WRITE_SIZE ] = { 0 };
-	const char ctlIdentifier[ ] = "DEADBEEF";
 	bool found = false;
 
 	SetFilePointer( newFile, 0, NULL, FILE_BEGIN );
@@ -240,7 +251,7 @@ void writeCTLElements( HANDLE newFile, CTL* controlSig)
 	if( found == false )
 		SetFilePointer( newFile, controlSig->border, NULL, FILE_BEGIN );
 
-	WriteFile( newFile, ctlIdentifier, sizeof( ctlIdentifier ), &bytesWritten, NULL );
+	WriteFile( newFile, ctlIdentifier, strlen( ctlIdentifier ) + 1, &bytesWritten, NULL );
 	char ctlBuf[ 65 ] = { 0 };
 	_itoa_s( GetFileSize( newFile, NULL ) / 6, ctlBuf, sizeof( ctlBuf ), 10 );
 	strcat_s( ctlBuf, sizeof( ctlBuf ), "!" );
@@ -297,28 +308,33 @@ void writeCTLElements( HANDLE newFile, CTL* controlSig)
 		strcpy_s( temp, sizeof( temp ), s1.substr( 1 ).c_str( ) );	
 	}
 }
-//This is really ugly... but it works. TODO: CLEAN UP
 int parseEquation( const char* filePath, std::string iniBuffer, CTL *controlSig )
 {
-	char iniBuf[ 65 ] = { 0 };
+	char iniBuf[ 65 ] = { 0 }, *vars[ 4 ] = { "FILE_SIZE", "SIG_SIZE", "BORDER", "CUR_INI_PATH" }, 
+		*operations[ 4 ] = { "*", "/", "+", "-" };
 	std::string temp, temp2;
 
 	//replace our variables
-	_itoa_s( controlSig->fileSize, iniBuf, sizeof( iniBuf ), 10 );
-	while( iniBuffer.find( "FILE_SIZE" ) != std::string::npos )
-		iniBuffer.replace( iniBuffer.find( "FILE_SIZE" ), strlen( "FILE_SIZE" ), iniBuf );
+	for( int i = 0; i < 4; i++ )
+	{
+		switch( i )
+		{
+		case 0:
+			_itoa_s( controlSig->fileSize, iniBuf, sizeof( iniBuf ), 10 );
+			break;
+		case 1:
+			_itoa_s( strlen( controlSig->sig ), iniBuf, sizeof( iniBuf ), 10 );
+			break;
+		case 2:
+			_itoa_s( controlSig->border, iniBuf, sizeof( iniBuf ), 10 );
+			break;
+		case 3:
+			_itoa_s( strlen( filePath ), iniBuf, sizeof( iniBuf ), 10 );
+		}
 
-	_itoa_s( strlen( controlSig->sig ), iniBuf, sizeof( iniBuf ), 10 );
-	while( iniBuffer.find( "SIG_SIZE" ) != std::string::npos )
-		iniBuffer.replace( iniBuffer.find( "SIG_SIZE" ), strlen( "SIG_SIZE" ), iniBuf );
-
-	_itoa_s( controlSig->border, iniBuf, sizeof( iniBuf ), 10 );
-	while( iniBuffer.find( "BORDER" ) != std::string::npos )
-		iniBuffer.replace( iniBuffer.find( "BORDER" ), strlen( "BORDER" ), iniBuf );
-
-	_itoa_s( strlen( filePath ), iniBuf, sizeof( iniBuf ), 10 );
-	while( iniBuffer.find( "CUR_INI_PATH" ) != std::string::npos )
-		iniBuffer.replace( iniBuffer.find( "CUR_INI_PATH" ), strlen( "CUR_INI_PATH" ), iniBuf );
+		while( iniBuffer.find( vars[ i ] ) != std::string::npos )
+			iniBuffer.replace( iniBuffer.find( vars[ i ] ), strlen( vars[ i ] ), iniBuf );
+	}
 
 	//eval () first
 	while( iniBuffer.find( "(" ) != std::string::npos )
@@ -329,113 +345,26 @@ int parseEquation( const char* filePath, std::string iniBuffer, CTL *controlSig 
 	}
 
 	//eval *,/,+,-
-	while( iniBuffer.find( "*" ) != std::string::npos )
-	{
-		temp = iniBuffer.substr( 0, iniBuffer.find( "*" ) );
-		temp2 = iniBuffer.substr( iniBuffer.find( "*" ) );
-		if( temp.find_last_of( "+-*/" ) != std::string::npos )
-			temp = temp.substr( temp.find_last_of( "+-*/" ) );
-		if( temp2.substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-			temp2 = temp2.substr( 0, temp2.substr( 1 ).find_first_of( "+-*/" ) + 1 );
-
-		_itoa_s( eval( temp.append( temp2 ) ), iniBuf, sizeof( iniBuf ), 10 );
-
-		if( iniBuffer.substr( 0, iniBuffer.find( "*" ) ).find_last_of( "+-*/" ) != std::string::npos )
+	for( int i = 0; i < 4; i++ )
+	{	
+		while( iniBuffer.find( operations[ i ] ) != std::string::npos )
 		{
-			if( iniBuffer.substr( iniBuffer.find( "*" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "*" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "*" ) + 1, iniBuf );
+			temp = iniBuffer.substr( 0, iniBuffer.find( operations[ i ] ) );
+			temp2 = iniBuffer.substr( iniBuffer.find( operations[ i ] ) );
+			if( temp.find_last_of( "+-*/" ) != std::string::npos )
+				temp = temp.substr( temp.find_last_of( "+-*/" ) );
+			if( temp2.substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
+				temp2 = temp2.substr( 0, temp2.substr( 1 ).find_first_of( "+-*/" ) + 1 );
+
+			_itoa_s( eval( temp.append( temp2 ) ), iniBuf, sizeof( iniBuf ), 10 );
+
+			if( iniBuffer.substr( iniBuffer.find( operations[ i ] ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
+				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( operations[ i ] ) ).substr( 1 ).find_first_of( "+-*/" ) 
+					+ iniBuffer.find( operations[ i ] ) + 1, iniBuf );
 			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "*" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "*" ) ).find_last_of( "+-*/" ), iniBuf );
+				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( operations[ i ] ) ).find_last_of( "+-*/" ) + 1, 
+					iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( operations[ i ] ) ).find_last_of( "+-*/" ), iniBuf );
 		}
-		else
-		{
-			if( iniBuffer.substr( iniBuffer.find( "*" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "*" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "*" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "*" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "*" ) ).find_last_of( "+-*/" ), iniBuf );
-		}	
-	}
-
-
-	while( iniBuffer.find( "/" ) != std::string::npos )
-	{
-		temp = iniBuffer.substr( 0, iniBuffer.find( "/" ) );
-		temp2 = iniBuffer.substr( iniBuffer.find( "/" ) );
-		if( temp.find_last_of( "+-*/" ) != std::string::npos )
-			temp = temp.substr( temp.find_last_of( "+-*/" ) );
-		if( temp2.substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-			temp2 = temp2.substr( 0, temp2.substr( 1 ).find_first_of( "+-*/" ) + 1 );
-
-		_itoa_s( eval( temp.append( temp2 ) ), iniBuf, sizeof( iniBuf ), 10 );
-
-		if( iniBuffer.substr( 0, iniBuffer.find( "/" ) ).find_last_of( "+-*/" ) != std::string::npos )
-		{
-			if( iniBuffer.substr( iniBuffer.find( "/" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "/" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "/" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "/" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "/" ) ).find_last_of( "+-*/" ), iniBuf );
-		}
-		else
-		{
-			if( iniBuffer.substr( iniBuffer.find( "/" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "/" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "/" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "/" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "/" ) ).find_last_of( "+-*/" ), iniBuf );
-		}	
-	}
-
-	while( iniBuffer.find( "+" ) != std::string::npos )
-	{
-		temp = iniBuffer.substr( 0, iniBuffer.find( "+" ) );
-		temp2 = iniBuffer.substr( iniBuffer.find( "+" ) );
-		if( temp.find_last_of( "+-*/" ) != std::string::npos )
-			temp = temp.substr( temp.find_last_of( "+-*/" ) );
-		if( temp2.substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-			temp2 = temp2.substr( 0, temp2.substr( 1 ).find_first_of( "+-*/" ) + 1 );
-
-		_itoa_s( eval( temp.append( temp2 ) ), iniBuf, sizeof( iniBuf ), 10 );
-
-		if( iniBuffer.substr( 0, iniBuffer.find( "+" ) ).find_last_of( "+-*/" ) != std::string::npos )
-		{
-			if( iniBuffer.substr( iniBuffer.find( "+" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "+" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "+" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "+" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "+" ) ).find_last_of( "+-*/" ), iniBuf );
-		}
-		else
-		{
-			if( iniBuffer.substr( iniBuffer.find( "+" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "+" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "+" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "+" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "+" ) ).find_last_of( "+-*/" ), iniBuf );
-		}	
-	}
-
-	while( iniBuffer.find( "-" ) != std::string::npos )
-	{
-		temp = iniBuffer.substr( 0, iniBuffer.find( "-" ) );
-		temp2 = iniBuffer.substr( iniBuffer.find( "-" ) );
-		if( temp.find_last_of( "+-*/" ) != std::string::npos )
-			temp = temp.substr( temp.find_last_of( "+-*/" ) );
-		if( temp2.substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-			temp2 = temp2.substr( 0, temp2.substr( 1 ).find_first_of( "+-*/" ) + 1 );
-
-		_itoa_s( eval( temp.append( temp2 ) ), iniBuf, sizeof( iniBuf ), 10 );
-
-		if( iniBuffer.substr( 0, iniBuffer.find( "-" ) ).find_last_of( "+-*/" ) != std::string::npos )
-		{
-			if( iniBuffer.substr( iniBuffer.find( "-" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "-" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "-" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "-" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "-" ) ).find_last_of( "+-*/" ), iniBuf );
-		}
-		else
-		{
-			if( iniBuffer.substr( iniBuffer.find( "-" ) ).substr( 1 ).find_first_of( "+-*/" ) != std::string::npos )
-				iniBuffer.replace( 0, iniBuffer.substr( iniBuffer.find( "-" ) ).substr( 1 ).find_first_of( "+-*/" ) + iniBuffer.find( "-" ) + 1, iniBuf );
-			else
-				iniBuffer.replace( iniBuffer.substr( 0, iniBuffer.find( "-" ) ).find_last_of( "+-*/" ) + 1, iniBuffer.length( ) - iniBuffer.substr( 0, iniBuffer.find( "-" ) ).find_last_of( "+-*/" ), iniBuf ); 
-		}	
 	}
 
 	return atoi( iniBuffer.c_str( ) );
