@@ -77,7 +77,7 @@ DWORD crc32Table[ 256 ] =
 
 DWORD genCRC32( HANDLE file )
 {
-	char buffer[ MAX_READ_WRITE_SIZE ] = { 0 };
+	BYTE buffer[ MAX_READ_WRITE_SIZE ] = { 0 };
 	DWORD crc = 0xFFFFFFFF, bytesRead = MAX_READ_WRITE_SIZE;
 
 	while( bytesRead == MAX_READ_WRITE_SIZE )

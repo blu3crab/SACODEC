@@ -19,7 +19,7 @@ typedef struct {
 } CTL;
 
 bool EncodeFile( const char* );
-bool DecodeFile( const char* );
+bool DecodeFile( const char*, const char* );
 HANDLE copyFile( const char*, CTL*, std::string & );
 void ReadINI( const char*, CTL*, char [ ] );
 void writeCTLElements( HANDLE, CTL*, const char* );
@@ -31,7 +31,7 @@ int main( int argc, char* argv[ ] )
 	switch( argc )
 	{
 	case 3:
-		if( !strcmp( argv[ 1 ], "-e" ) == 0 || strcmp( argv[ 1 ], "-E" ) )
+		if( !strcmp( argv[ 1 ], "-e" ) || !strcmp( argv[ 1 ], "-E" ) )
 		{
 			//TODO: check for directory
 			if( EncodeFile( argv[ 2 ] ) != 0 )
@@ -39,10 +39,10 @@ int main( int argc, char* argv[ ] )
 			else
 				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " encoded successfully" << std::endl;
 		}
-		else if( !strcmp( argv[ 1 ], "-d" ) == 0 || strcmp( argv[ 1 ], "-D" ) )
+		else if( !strcmp( argv[ 1 ], "-d" ) || !strcmp( argv[ 1 ], "-D" ) )
 		{
 			//TODO: check for directory
-			if( DecodeFile( argv[ 2 ] ) != 0 )
+			if( DecodeFile( argv[ 2 ], NULL ) != 0 )
 				std::cout << "Problem decoding the file." << std::endl;
 			else
 				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " decoded successfully" << std::endl;
@@ -50,6 +50,21 @@ int main( int argc, char* argv[ ] )
 		else
 			std::cout << "Invalid arguments. Please type -help for details." << std::endl;
 
+		break;
+	
+	case 5:
+		//user provides optional key
+		if( !strcmp( argv[ 1 ], "-d" ) || !strcmp( argv[ 1 ], "-D" ) )
+		{	
+			if( !strcmp( argv[ 2 ], "-k" ) || !strcmp( argv[ 2 ], "-K" ) )
+			{
+				//TODO: check for directory
+				if( DecodeFile( argv[ 4 ], argv[ 3 ] ) != 0 )
+					std::cout << "Problem decoding the file." << std::endl;
+				else
+					std::cout << " --- " << std::endl << "File " << argv[ 4 ] << " decoded successfully" << std::endl;
+			}
+		}
 		break;
 
 	default:
@@ -98,6 +113,7 @@ bool EncodeFile( const char* filePath )
 	}
 
 	SetFilePointer( crcFile, 0, NULL, FILE_BEGIN );
+	SetFilePointer( newFile, 0, NULL, FILE_BEGIN );
 	_itoa_s( genCRC32( newFile ), buffer, sizeof( buffer ), 16 );
 	WriteFile( crcFile, buffer, strlen( buffer ), &bytesWritten, NULL );
 	CloseHandle( crcFile );
@@ -107,12 +123,60 @@ bool EncodeFile( const char* filePath )
 	return 0;
 }
 
-bool DecodeFile( const char* filePath )
+bool DecodeFile( const char* filePath, const char* key )
 {
+	HANDLE crcFile = 0, originalFile = 0;
+	std::string fileName;
+	DWORD bytesRead = 0;
+	char buffer[ MAX_PATH ] = { 0 };
+	char buffer2[ MAX_PATH ] = { 0 };
+
+	originalFile = CreateFile( reinterpret_cast< LPCSTR > ( filePath ), GENERIC_READ, 0, 
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
 	
+	if( originalFile == INVALID_HANDLE_VALUE )
+	{
+		std::cout << "Could not find file to decode" << std::endl;
+		return 1;
+	}
+	
+	//verify the original crc and the current crc match
+	fileName = filePath;
+	fileName = fileName.substr( 0, fileName.find_last_of( "." ) );
+
+	crcFile = CreateFile( reinterpret_cast< LPCSTR > ( fileName.c_str( ) ), GENERIC_READ, 0, 
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+	
+	if( crcFile == INVALID_HANDLE_VALUE )
+	{
+		std::cout << "Could not find crc file" << std::endl;
+		return 1;
+	}
+
+	SetFilePointer( crcFile, 0, NULL, FILE_BEGIN );
+	ReadFile( crcFile, buffer, sizeof( buffer ), &bytesRead, NULL );
+
+	SetFilePointer( originalFile, 0, NULL, FILE_BEGIN );
+	_itoa_s( genCRC32( originalFile ), buffer2, sizeof( buffer2 ), 16 );
+
+	if( strcmp( buffer, buffer2 ) )
+	{
+		std::cout << "Crc's don't match" << std::endl;
+		return 1;
+	}
+
+	CloseHandle( crcFile );
+
+	//either use key from input, or read ini for key
+
+	//scan for key within file
+
+
+	CloseHandle( originalFile );
+
 	return 0;
 }
-
+	
 HANDLE copyFile( const char* filePath, CTL *controlSig, std::string &tempFileName )
 {
 	tempFileName = filePath;
