@@ -1,7 +1,8 @@
-/////////////////////////////////////////////////////////////////
-// SACODEC - 28FEB11
-// author: nat
-// fiddling...
+/*
+ SACodec - 07JUN11
+ author: Nathan
+*/
+
 #include <windows.h>
 #include <iostream>
 #include <fstream>
@@ -19,7 +20,7 @@ typedef struct {
 } CTL;
 
 bool EncodeFile( const char* );
-bool DecodeFile( const char*, const char* );
+bool DecodeFile( const char*, const char*, const char* );
 HANDLE copyFile( const char*, CTL*, std::string & );
 void ReadINI( const char*, CTL*, char [ ] );
 void writeCTLElements( HANDLE, CTL*, const char* );
@@ -28,50 +29,72 @@ int eval( std::string buffer );
 
 int main( int argc, char* argv[ ] ) 
 {
-	switch( argc )
+	int edcoder = 0;
+	char *filename = NULL, *key = NULL, *sig = NULL;
+
+	for( int i = 1; i < argc; i++ )
 	{
-	case 3:
-		if( !strcmp( argv[ 1 ], "-e" ) || !strcmp( argv[ 1 ], "-E" ) )
+		if( !strcmp( argv[ i ], "-e" ) )
+			edcoder = 1;
+		else if( !strcmp( argv[ i ], "-d" ) )
+			edcoder = 2;
+		else if( !strcmp( argv[ i ], "-f" ) )
 		{
-			//TODO: check for directory
-			if( EncodeFile( argv[ 2 ] ) != 0 )
-				std::cout << "Problem encoding the file." << std::endl;
-			else
-				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " encoded successfully" << std::endl;
+			filename = ( char* ) malloc( 256 );
+			strcpy_s( filename, 256 , argv[ i + 1 ] );
+			i++;
 		}
-		else if( !strcmp( argv[ 1 ], "-d" ) || !strcmp( argv[ 1 ], "-D" ) )
+		else if( !strcmp( argv[ i ], "-k" ) )
 		{
-			//TODO: check for directory
-			if( DecodeFile( argv[ 2 ], NULL ) != 0 )
-				std::cout << "Problem decoding the file." << std::endl;
-			else
-				std::cout << " --- " << std::endl << "File " << argv[ 2 ] << " decoded successfully" << std::endl;
+			key = ( char* ) malloc( 65 );
+			strcpy_s( key, 65, argv[ i + 1 ] );
+			i++;
+		}
+		else if( !strcmp( argv[ i ], "-s" ) )
+		{
+			sig = ( char* ) malloc( 256 );
+			strcpy_s( sig, 256, argv[ i + 1 ] );
+			i++;
+		}
+		else if( !strcmp( argv[ i ], "-help" ) )
+		{
+			std::cout << "Here goes help" << std::endl;
 		}
 		else
-			std::cout << "Invalid arguments. Please type -help for details." << std::endl;
-
-		break;
-	
-	case 5:
-		//user provides optional key
-		if( !strcmp( argv[ 1 ], "-d" ) || !strcmp( argv[ 1 ], "-D" ) )
-		{	
-			if( !strcmp( argv[ 2 ], "-k" ) || !strcmp( argv[ 2 ], "-K" ) )
-			{
-				//TODO: check for directory
-				if( DecodeFile( argv[ 4 ], argv[ 3 ] ) != 0 )
-					std::cout << "Problem decoding the file." << std::endl;
-				else
-					std::cout << " --- " << std::endl << "File " << argv[ 4 ] << " decoded successfully" << std::endl;
-			}
-		}
-		break;
-
-	default:
-		std::cout << "Here goes help" << std::endl;
-
-		break;
+			std::cout << "Unknown switch passed. Please type -help for more details." << std::endl;
 	}
+	
+	if( filename == NULL )
+	{
+		std::cout << "Please provide a filename with the -f switch" << std::endl;
+		return 1;
+	}
+
+	if( edcoder == 0 )
+	{
+		std::cout << "Please pass either a -e or -d switch" << std::endl;
+		return 1;
+	}
+	else if( edcoder == 1 )
+	{
+		if( EncodeFile( filename ) )
+			std::cout << "Problem encoding the file" << std::endl;
+		else
+			std::cout << "---" << std::endl << "File " << filename << " encoded successfully" << std::endl;
+	}
+	else
+	{
+		if( DecodeFile( filename, key, sig ) )
+			std::cout << "Problem decoding the file" << std::endl;
+		else
+			std::cout << "---" << std::endl << "File " << filename << " decoded successfully" << std::endl;
+	}
+
+	free( filename );
+	free( key );
+	free( sig );
+
+	filename = key = sig = NULL;
 
 	return 0;
 }
@@ -123,12 +146,12 @@ bool EncodeFile( const char* filePath )
 	return 0;
 }
 
-bool DecodeFile( const char* filePath, const char* key )
+bool DecodeFile( const char* filePath, const char* key, const char* sig )
 {
 	HANDLE crcFile = 0, originalFile = 0;
 	std::string fileName;
 	DWORD bytesRead = 0;
-	char buffer[ MAX_PATH ] = { 0 };
+	char buffer[ MAX_READ_WRITE_SIZE ] = { 0 };
 	char buffer2[ MAX_PATH ] = { 0 };
 
 	originalFile = CreateFile( reinterpret_cast< LPCSTR > ( filePath ), GENERIC_READ, 0, 
@@ -168,15 +191,138 @@ bool DecodeFile( const char* filePath, const char* key )
 	CloseHandle( crcFile );
 
 	//either use key from input, or read ini for key
+	//TODO check for sig here
+	if( key == NULL )
+	{
+		
+	}	
 
 	//scan for key within file
+	int count = 0, currentBlock = 0, idLoc = 0;
+	bool found = false;
+	char trueKey[ 65 ] = { 0 };
+	trueKey[ 0 ] = '!';
+	strcat_s( trueKey, sizeof( trueKey ), key );
+	strcat_s( trueKey, sizeof( trueKey ), "!" );
 
+	SetFilePointer( originalFile, 0, NULL, FILE_BEGIN );
+	bytesRead = MAX_READ_WRITE_SIZE;
+	while( bytesRead == MAX_READ_WRITE_SIZE && found == false )
+	{
+		if( ReadFile( originalFile, buffer, MAX_READ_WRITE_SIZE, &bytesRead, NULL ) )
+		{
+			for( int i = 0; i < ( signed ) ( bytesRead - strlen( trueKey ) ); i++ )
+			{
+				if( buffer[ i ] == '!' ) 
+				{
+					for( int j = 0; j < ( signed ) ( strlen( trueKey ) ); j++ )
+					{
+						if( buffer[ i + j ] == trueKey[ j ] )
+							count++;
+					}
+					if( count == strlen( trueKey ) )
+					{
+						idLoc = currentBlock + i;
+						found = true;
+						break;
+					}
+					else
+						count = 0;
+				}
+			}
+			currentBlock += bytesRead;
+		}
+	}
+
+	if( found == false )
+	{
+		std::cout << "Could not find identifier" << std::endl;
+		return 1;
+	}
+
+	count = 0;
+
+	//read spacing between CTL elements from there + keylength + 1 to first !
+	char tempSpacingBuffer[ 65 ] = { 0 };
+	int spacing = 0;
+
+	SetFilePointer( originalFile, ( idLoc + strlen( trueKey ) + 1 ), NULL, FILE_BEGIN );
+	while( ReadFile( originalFile, buffer, 1, &bytesRead, NULL ) )
+	{
+		if( buffer[ 0 ] == '!' )
+			break;
+		else
+		{
+			tempSpacingBuffer[ count ] = buffer[ 0 ];
+			count++;
+		}
+	}
+
+	spacing = atoi( tempSpacingBuffer );
+
+	//go through and collect CTL elements
+	CTL controlSig = { 0 };
+
+	for( int i = 1; i < 5; i++ )
+	{
+		count = 0;
+		memset( tempSpacingBuffer, 0, 65 );
+
+		SetFilePointer( originalFile, spacing * i, NULL, FILE_BEGIN );
+		while( ReadFile( originalFile, buffer, 1, &bytesRead, NULL ) )
+		{
+			if( buffer[ 0 ] == '!' )
+				break;
+			else
+			{
+				tempSpacingBuffer[ count ] = buffer[ 0 ];
+				count++;
+			}
+		}
+
+		switch( i )
+		{
+		case 1:
+			controlSig.fileSize = atoi( tempSpacingBuffer );
+			break;
+		case 2:
+			controlSig.sigSize = atoi( tempSpacingBuffer );
+			break;
+		case 3:
+			controlSig.sigSpacing = atoi( tempSpacingBuffer );
+			break;
+		case 4:
+			controlSig.border = atoi( tempSpacingBuffer );
+		}
+	}
+
+	if( controlSig.fileSize != GetFileSize( originalFile, NULL ) )
+	{
+		std::cout << "File sizes do not match" << std::endl;
+		return 1;
+	}
+
+	//go through and read sig, see if it matches provided sig
+	//TODO: Track if we need to adjust for overwrite
+	count = 0;
+	for( int i = 1; i < (signed) ( controlSig.sigSize + 1 ); i++ )
+	{
+		SetFilePointer( originalFile, controlSig.sigSpacing * i, NULL, FILE_BEGIN );
+		ReadFile( originalFile, buffer, 1, &bytesRead, NULL );
+		controlSig.sig[ count ] = buffer[ 0 ];
+		count++;
+	}
+
+	if( strcmp( controlSig.sig, sig ) )
+	{
+		std::cout << "Signatures do not match" << std::endl;
+		return 1;
+	}
 
 	CloseHandle( originalFile );
 
 	return 0;
 }
-	
 HANDLE copyFile( const char* filePath, CTL *controlSig, std::string &tempFileName )
 {
 	tempFileName = filePath;
@@ -315,8 +461,11 @@ void writeCTLElements( HANDLE newFile, CTL* controlSig, const char* ctlIdentifie
 	if( found == false )
 		SetFilePointer( newFile, controlSig->border, NULL, FILE_BEGIN );
 
-	WriteFile( newFile, ctlIdentifier, strlen( ctlIdentifier ) + 1, &bytesWritten, NULL );
 	char ctlBuf[ 65 ] = { 0 };
+	ctlBuf[ 0 ] = '!';
+	strcat_s( ctlBuf, sizeof( ctlBuf ), ctlIdentifier );
+	strcat_s( ctlBuf, sizeof( ctlBuf ), "!" );
+	WriteFile( newFile, ctlBuf, strlen( ctlBuf ) + 1, &bytesWritten, NULL );
 	_itoa_s( GetFileSize( newFile, NULL ) / 6, ctlBuf, sizeof( ctlBuf ), 10 );
 	strcat_s( ctlBuf, sizeof( ctlBuf ), "!" );
 	WriteFile( newFile, ctlBuf, strlen( ctlBuf ), &bytesWritten, NULL );
