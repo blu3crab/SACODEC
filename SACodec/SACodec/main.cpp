@@ -20,12 +20,14 @@ typedef struct {
 } CTL;
 
 bool EncodeFile( const char* );
-bool DecodeFile( const char*, const char*, const char* );
+bool DecodeFile( const char*, char*, char* );
 HANDLE copyFile( const char*, CTL*, std::string & );
 void ReadINI( const char*, CTL*, char [ ] );
 void writeCTLElements( HANDLE, CTL*, const char* );
+int readCTLElements( HANDLE, const char*, const char* );
 int parseEquation( const char*, std::string, CTL* );
 int eval( std::string buffer );
+int compareCrcs( HANDLE, const char* );
 
 int main( int argc, char* argv[ ] ) 
 {
@@ -46,8 +48,8 @@ int main( int argc, char* argv[ ] )
 		}
 		else if( !strcmp( argv[ i ], "-k" ) )
 		{
-			key = ( char* ) malloc( 65 );
-			strcpy_s( key, 65, argv[ i + 1 ] );
+			key = ( char* ) malloc( 256 );
+			strcpy_s( key, 256, argv[ i + 1 ] );
 			i++;
 		}
 		else if( !strcmp( argv[ i ], "-s" ) )
@@ -146,61 +148,78 @@ bool EncodeFile( const char* filePath )
 	return 0;
 }
 
-bool DecodeFile( const char* filePath, const char* key, const char* sig )
+bool DecodeFile( const char* filePath, char* key, char* sig )
 {
-	HANDLE crcFile = 0, originalFile = 0;
-	std::string fileName;
-	DWORD bytesRead = 0;
-	char buffer[ MAX_READ_WRITE_SIZE ] = { 0 };
-	char buffer2[ MAX_PATH ] = { 0 };
+	HANDLE originalFile = 0;
+	CTL tempCTL = { 0 };
 
 	originalFile = CreateFile( reinterpret_cast< LPCSTR > ( filePath ), GENERIC_READ, 0, 
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
 	
-	if( originalFile == INVALID_HANDLE_VALUE )
-	{
-		std::cout << "Could not find file to decode" << std::endl;
+	if( compareCrcs( originalFile, filePath ) )
 		return 1;
-	}
-	
-	//verify the original crc and the current crc match
-	fileName = filePath;
-	fileName = fileName.substr( 0, fileName.find_last_of( "." ) );
 
-	crcFile = CreateFile( reinterpret_cast< LPCSTR > ( fileName.c_str( ) ), GENERIC_READ, 0, 
-		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
-	
-	if( crcFile == INVALID_HANDLE_VALUE )
+	//either use key/sig from input, or read ini for key
+	if( key == NULL || sig == NULL )
 	{
-		std::cout << "Could not find crc file" << std::endl;
-		return 1;
-	}
+		char iniLoc[ 256 ] = { 0 }, tempKey[ 256 ] = { 0 }, tempSig[ 256 ] = { 0 };
 
-	SetFilePointer( crcFile, 0, NULL, FILE_BEGIN );
-	ReadFile( crcFile, buffer, sizeof( buffer ), &bytesRead, NULL );
+		GetModuleFileName( NULL, iniLoc, MAX_PATH );
+		for( int i = strlen( iniLoc ); iniLoc[ i ] != '\\'; i-- )
+			iniLoc[ i ] = 0;
+		strcat_s( iniLoc, sizeof( iniLoc ), "SACodec.ini" );
 
-	SetFilePointer( originalFile, 0, NULL, FILE_BEGIN );
-	_itoa_s( genCRC32( originalFile ), buffer2, sizeof( buffer2 ), 16 );
+		std::ifstream iniStream;
+		std::string iniBuffer;
+		size_t iniLocations = 0;
 
-	if( strcmp( buffer, buffer2 ) )
-	{
-		std::cout << "Crc's don't match" << std::endl;
-		return 1;
-	}
+		iniStream.open( iniLoc, std::ios::in );
+		if( iniStream.is_open( ) )
+		{
+			while( iniStream.good( ) )
+			{
+				std::getline( iniStream, iniBuffer );	
 
-	CloseHandle( crcFile );
-
-	//either use key from input, or read ini for key
-	//TODO check for sig here
-	if( key == NULL )
-	{
+				iniLocations = iniBuffer.find( "[Signature]" );
+				if( iniLocations != std::string::npos )
+				{
+					strcpy_s( tempSig, 256, iniBuffer.substr( iniLocations + 
+						strlen( "[Signature]=" ) ).c_str( ) );
+				}
 		
+				iniLocations = iniBuffer.find( "[Identifier]" );
+				if( iniLocations != std::string::npos )
+				{
+					strcpy_s( tempKey, 256, iniBuffer.substr( iniLocations + 
+						strlen( "[Identifier]=" ) ).c_str( ) );
+				}
+			}
+
+			iniStream.close( );
+		}
+		
+		if( key == NULL )
+			key = tempKey;
+		if( sig == NULL )
+			sig = tempSig;
 	}	
 
 	//scan for key within file
+	if( readCTLElements( originalFile, key, sig ) )
+		return 1;
+
+	CloseHandle( originalFile );
+
+	return 0;
+}
+
+int readCTLElements( HANDLE originalFile, const char* key, const char* sig )
+{
 	int count = 0, currentBlock = 0, idLoc = 0;
+	DWORD bytesRead = 0;
 	bool found = false;
-	char trueKey[ 65 ] = { 0 };
+	char trueKey[ 256 ] = { 0 }, buffer[ MAX_READ_WRITE_SIZE ] = { 0 };;
+
 	trueKey[ 0 ] = '!';
 	strcat_s( trueKey, sizeof( trueKey ), key );
 	strcat_s( trueKey, sizeof( trueKey ), "!" );
@@ -243,7 +262,7 @@ bool DecodeFile( const char* filePath, const char* key, const char* sig )
 	count = 0;
 
 	//read spacing between CTL elements from there + keylength + 1 to first !
-	char tempSpacingBuffer[ 65 ] = { 0 };
+	char tempSpacingBuffer[ 256 ] = { 0 };
 	int spacing = 0;
 
 	SetFilePointer( originalFile, ( idLoc + strlen( trueKey ) + 1 ), NULL, FILE_BEGIN );
@@ -262,13 +281,14 @@ bool DecodeFile( const char* filePath, const char* key, const char* sig )
 
 	//go through and collect CTL elements
 	CTL controlSig = { 0 };
+	DWORD fpPos[ 4 ][ 2 ] = { 0 }, sigFpPos = 0;
 
 	for( int i = 1; i < 5; i++ )
 	{
 		count = 0;
-		memset( tempSpacingBuffer, 0, 65 );
+		memset( tempSpacingBuffer, 0, 256 );
 
-		SetFilePointer( originalFile, spacing * i, NULL, FILE_BEGIN );
+		fpPos[ i - 1 ][ 0 ] = SetFilePointer( originalFile, spacing * i, NULL, FILE_BEGIN );
 		while( ReadFile( originalFile, buffer, 1, &bytesRead, NULL ) )
 		{
 			if( buffer[ 0 ] == '!' )
@@ -279,6 +299,7 @@ bool DecodeFile( const char* filePath, const char* key, const char* sig )
 				count++;
 			}
 		}
+		fpPos[ i - 1 ][ 1 ] = count;
 
 		switch( i )
 		{
@@ -307,7 +328,15 @@ bool DecodeFile( const char* filePath, const char* key, const char* sig )
 	count = 0;
 	for( int i = 1; i < (signed) ( controlSig.sigSize + 1 ); i++ )
 	{
-		SetFilePointer( originalFile, controlSig.sigSpacing * i, NULL, FILE_BEGIN );
+		sigFpPos = SetFilePointer( originalFile, controlSig.sigSpacing * i, NULL, FILE_BEGIN );
+		for( int j = 0; j < 4; j++ )
+		{
+			if( sigFpPos > fpPos[ j ][ 0 ] && sigFpPos < fpPos[ j ][ 0 ] + fpPos[ j ][ 1 ] )
+			{
+				sigFpPos = SetFilePointer( originalFile, fpPos[ j ][ 0 ] + fpPos[ j ][ 1 ], NULL, FILE_BEGIN );
+				break;
+			}
+		}
 		ReadFile( originalFile, buffer, 1, &bytesRead, NULL );
 		controlSig.sig[ count ] = buffer[ 0 ];
 		count++;
@@ -319,10 +348,53 @@ bool DecodeFile( const char* filePath, const char* key, const char* sig )
 		return 1;
 	}
 
-	CloseHandle( originalFile );
+	return 0;
+}
+
+int compareCrcs( HANDLE originalFile, const char* filePath )
+{
+	HANDLE crcFile = NULL;
+	std::string fileName;
+	char buffer[ MAX_READ_WRITE_SIZE ] = { 0 }, tempBuffer[ MAX_PATH ] = { 0 };
+	DWORD bytesRead = 0;
+
+	if( originalFile == INVALID_HANDLE_VALUE )
+	{
+		std::cout << "Could not find file to decode" << std::endl;
+		return 1;
+	}
+	
+	//verify the original crc and the current crc match
+	fileName = filePath;
+	fileName = fileName.substr( 0, fileName.find_last_of( "." ) );
+
+	crcFile = CreateFile( reinterpret_cast< LPCSTR > ( fileName.c_str( ) ), GENERIC_READ, 0, 
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+	
+	if( crcFile == INVALID_HANDLE_VALUE )
+	{
+		std::cout << "Could not find crc file" << std::endl;
+		return 1;
+	}
+
+	SetFilePointer( crcFile, 0, NULL, FILE_BEGIN );
+	ReadFile( crcFile, buffer, sizeof( buffer ), &bytesRead, NULL );
+
+	SetFilePointer( originalFile, 0, NULL, FILE_BEGIN );
+	_itoa_s( genCRC32( originalFile ), tempBuffer, sizeof( tempBuffer ), 16 );
+
+	if( strcmp( buffer, tempBuffer ) )
+	{
+		std::cout << "Crc's don't match" << std::endl;
+		return 1;
+	}
+
+	CloseHandle( crcFile );
+
 
 	return 0;
 }
+
 HANDLE copyFile( const char* filePath, CTL *controlSig, std::string &tempFileName )
 {
 	tempFileName = filePath;
@@ -461,7 +533,7 @@ void writeCTLElements( HANDLE newFile, CTL* controlSig, const char* ctlIdentifie
 	if( found == false )
 		SetFilePointer( newFile, controlSig->border, NULL, FILE_BEGIN );
 
-	char ctlBuf[ 65 ] = { 0 };
+	char ctlBuf[ 256 ] = { 0 };
 	ctlBuf[ 0 ] = '!';
 	strcat_s( ctlBuf, sizeof( ctlBuf ), ctlIdentifier );
 	strcat_s( ctlBuf, sizeof( ctlBuf ), "!" );
@@ -523,7 +595,7 @@ void writeCTLElements( HANDLE newFile, CTL* controlSig, const char* ctlIdentifie
 }
 int parseEquation( const char* filePath, std::string iniBuffer, CTL *controlSig )
 {
-	char iniBuf[ 65 ] = { 0 }, *vars[ 4 ] = { "FILE_SIZE", "SIG_SIZE", "BORDER", "CUR_INI_PATH" }, 
+	char iniBuf[ 256 ] = { 0 }, *vars[ 4 ] = { "FILE_SIZE", "SIG_SIZE", "BORDER", "CUR_INI_PATH" }, 
 		*operations[ 4 ] = { "*", "/", "+", "-" };
 	std::string temp, temp2;
 
